@@ -25,6 +25,7 @@ import me.bmax.apatch.Natives
 import me.bmax.apatch.apApp
 import me.bmax.apatch.services.RootServices
 import me.bmax.apatch.util.APatchCli
+import me.bmax.apatch.util.rootShellForResult
 import me.bmax.apatch.util.HanziToPinyin
 import me.bmax.apatch.util.PkgConfig
 import java.text.Collator
@@ -195,6 +196,23 @@ class SuperUserViewModel : ViewModel() {
         }
     }
 
+    // Same app id in every other Android user (work profile, secondary user,
+    // clone) where this package is installed. apd mirrors grants the same way
+    // on refresh; doing it here too makes the change take effect immediately.
+    private fun otherUserUids(app: AppInfo): List<Int> {
+        val appId = app.uid % 100000
+        if (appId < 10000) return emptyList()
+        val pkg = app.packageName
+        val result = rootShellForResult("ls /data/user")
+        if (!result.isSuccess) return emptyList()
+        return result.out.mapNotNull { it.trim().toIntOrNull() }
+            .map { it * 100000 + appId }
+            .filter { it != app.uid }
+            .filter { uid ->
+                rootShellForResult("test -d /data/user/${uid / 100000}/$pkg").isSuccess
+            }
+    }
+
     fun setRootGranted(app: AppInfo, granted: Boolean) {
         val config = app.config
         val newConfig = if (granted) {
@@ -212,6 +230,16 @@ class SuperUserViewModel : ViewModel() {
             Natives.setUidExclude(app.uid, 0)
         } else {
             Natives.revokeSu(app.uid)
+        }
+        thread {
+            otherUserUids(app).forEach { uid ->
+                if (granted) {
+                    Natives.grantSu(uid, 0, newConfig.profile.scontext)
+                    Natives.setUidExclude(uid, 0)
+                } else {
+                    Natives.revokeSu(uid)
+                }
+            }
         }
         updateAppConfig(app, newConfig)
     }
@@ -232,6 +260,12 @@ class SuperUserViewModel : ViewModel() {
         }
         PkgConfig.changeConfig(newConfig)
         Natives.setUidExclude(app.uid, newConfig.exclude)
+        thread {
+            otherUserUids(app).forEach { uid ->
+                if (excluded) Natives.revokeSu(uid)
+                Natives.setUidExclude(uid, newConfig.exclude)
+            }
+        }
         updateAppConfig(app, newConfig)
     }
 }
