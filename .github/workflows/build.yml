@@ -80,6 +80,40 @@ jobs:
           ./gradlew clean assembleDebug assembleRelease
           echo "BUILD_TOOL_VERSION=$(ls /usr/local/lib/android/sdk/build-tools/ | tail -n 1)" >> $GITHUB_ENV
 
+      - name: Upload unsigned APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: APatch-Unsigned
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+
+      - name: Sign Release with ad-hoc key
+        run: |
+          BUILD_TOOLS="/usr/local/lib/android/sdk/build-tools/${BUILD_TOOL_VERSION}"
+          KS="$RUNNER_TEMP/adhoc.jks"
+          # Generate a throwaway keystore for self-signing (not for distribution/trust).
+          keytool -genkeypair -v \
+            -keystore "$KS" -storepass android -keypass android \
+            -alias adhoc -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=APatch Local Build, O=Self, C=US"
+          for APK in app/build/outputs/apk/release/*.apk; do
+            ALIGNED="${APK%.apk}-aligned.apk"
+            "$BUILD_TOOLS/zipalign" -p -f 4 "$APK" "$ALIGNED"
+            "$BUILD_TOOLS/apksigner" sign \
+              --ks "$KS" --ks-pass pass:android --key-pass pass:android \
+              --ks-key-alias adhoc "$ALIGNED"
+            mv "$ALIGNED" "${APK%.apk}-signed.apk"
+          done
+
+      - name: Upload ad-hoc signed Release APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: APatch-Release-SelfSigned
+          path: app/build/outputs/apk/release/*-signed.apk
+          if-no-files-found: warn
+
       - name: Sign Release (v2 only)
         id: sign_app
         if: ${{ env.SIGNING_KEY != '' }}
