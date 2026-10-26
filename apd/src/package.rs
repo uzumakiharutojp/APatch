@@ -238,6 +238,47 @@ where
     File::open(filename).map(|file| io::BufReader::new(file).lines())
 }
 
+const PER_USER_RANGE: i32 = 100000;
+const FIRST_APPLICATION_UID: i32 = 10000;
+
+fn android_user_ids() -> Vec<i32> {
+    let mut users: Vec<i32> = std::fs::read_dir("/data/user")
+        .map(|dir| {
+            dir.filter_map(|entry| entry.ok())
+                .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    if !users.contains(&0) {
+        users.push(0);
+    }
+    users.sort_unstable();
+    users
+}
+
+/// Every uid a package config applies to: its own stored uid, plus the same
+/// app id in every other Android user (work profile, secondary user, clone)
+/// where the package is actually installed. System/shell uids are never
+/// mirrored. A grant made in one user therefore covers all of the owner's
+/// users instead of only the one it was made from.
+pub fn config_target_uids(config: &PackageConfig) -> Vec<i32> {
+    let mut uids = vec![config.uid];
+    let app_id = config.uid % PER_USER_RANGE;
+    if app_id < FIRST_APPLICATION_UID {
+        return uids;
+    }
+    for user in android_user_ids() {
+        let uid = user * PER_USER_RANGE + app_id;
+        if uids.contains(&uid) {
+            continue;
+        }
+        if Path::new(&format!("/data/user/{}/{}", user, config.pkg)).exists() {
+            uids.push(uid);
+        }
+    }
+    uids
+}
+
 pub fn synchronize_package_uid() -> io::Result<()> {
     info!("[synchronize_package_uid] Start synchronizing root list with system packages...");
 
